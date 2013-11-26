@@ -1,0 +1,174 @@
+////////////////////////////////////////////////////
+// Written by blazorthes for
+// AMS 2013-2014 Solar Energy Prediction Contest
+// November 2013
+////////////////////////////////////////////////////
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+using System.IO;
+
+using sds = Microsoft.Research.Science.Data;
+using Microsoft.Research.Science.Data.Imperative;
+
+namespace ConvertNCtoCSV
+{
+    class Program
+    {
+        static void Main(string[] args)
+        {
+            double LAT, LON, val;
+            float[] vvv;
+            int[,] VVV;
+            double[] PPP;
+
+            /////////////////////////////////////
+            /////     Mesonet stations      /////
+            /////////////////////////////////////
+            List<string> Stations = new List<string>();         // List of Mesonet names
+            List<double> nlat = new List<double>();             // List of Mesonet latitudes
+            List<double> elon = new List<double>();             // List of Mesone longitudes
+            List<int[,]> NearestGEFS = new List<int[,]>();      // List of coordinates of the 4 nearest GEFS nodes
+            List<double[]> Weights = new List<double[]>();      // List of weights of the 4 nearest GEFS nodes (linked to the distance)
+
+            StreamReader sr = new StreamReader("StationsLatLon.csv"); // Read the csv file containing all the Mesonet stations with latitudes and longitudes (to be put in the same folder as the executable)
+            sr.ReadLine(); // Header, do nothing ...
+            while (!sr.EndOfStream)
+            {
+                var line = sr.ReadLine();
+                var values = line.Split(',');
+                Stations.Add(values[0]);
+                LAT = Convert.ToDouble(values[1]);
+                nlat.Add(LAT);
+                LON = Convert.ToDouble(values[2]);
+                elon.Add(LON);
+
+                VVV = new int[4, 2]; // Coordinates of the 4 nearest GEFS nodes
+                VVV[0, 0] = Convert.ToInt16(Math.Floor(LAT)) - 31;
+                VVV[0, 1] = Convert.ToInt16(Math.Floor(LON)) - 254;
+                VVV[1, 0] = Convert.ToInt16(Math.Floor(LAT)) - 31 + 1;
+                VVV[1, 1] = Convert.ToInt16(Math.Floor(LON)) - 254;
+                VVV[2, 0] = Convert.ToInt16(Math.Floor(LAT)) - 31;
+                VVV[2, 1] = Convert.ToInt16(Math.Floor(LON)) - 254 + 1;
+                VVV[3, 0] = Convert.ToInt16(Math.Floor(LAT)) - 31 + 1;
+                VVV[3, 1] = Convert.ToInt16(Math.Floor(LON)) - 254 + 1;
+                NearestGEFS.Add(VVV);
+
+                PPP = new double[4]; // Weights of the 4 nearest GEFS nodes (linked to the distance)
+
+                // For each of the 4 nearest GEFS nodes, calculate Max(0, 1 - distance to Mesonet)
+                PPP[0] = Math.Max(0, 1 - Math.Sqrt(Math.Pow(LAT - Math.Floor(LAT), 2) + Math.Pow(LON - Math.Floor(LON), 2)));
+                PPP[1] = Math.Max(0, 1 - Math.Sqrt(Math.Pow(LAT - Math.Floor(LAT) - 1, 2) + Math.Pow(LON - Math.Floor(LON), 2)));
+                PPP[2] = Math.Max(0, 1 - Math.Sqrt(Math.Pow(LAT - Math.Floor(LAT), 2) + Math.Pow(LON - Math.Floor(LON) - 1, 2)));
+                PPP[3] = Math.Max(0, 1 - Math.Sqrt(Math.Pow(LAT - Math.Floor(LAT) - 1, 2) + Math.Pow(LON - Math.Floor(LON) - 1, 2)));
+
+                // Normalze the weights
+                val = PPP[0] + PPP[1] + PPP[2] + PPP[3];
+                PPP[0] = PPP[0] / val;
+                PPP[1] = PPP[1] / val;
+                PPP[2] = PPP[2] / val;
+                PPP[3] = PPP[3] / val;
+                Weights.Add(PPP);
+            }
+
+            int NumberStations = Stations.Count; // Total number of GEFS nodes
+
+            /////////////////////////////////////
+            /////         GEFS data         /////
+            /////////////////////////////////////
+            // In the same folder as the executable put all the .nc files you want to extract (2 files in this example, apcp and dlwrf 
+
+            List<string> NCfiles = new List<string>();
+
+            NCfiles.Add("apcp_sfc_latlon_subset_20080101_20121130.nc");
+            NCfiles.Add("dlwrf_sfc_latlon_subset_20080101_20121130.nc");
+
+            int nbNCfiles = NCfiles.Count;
+
+            /////////////////////////////////////
+            /////     Read the .nc files    /////
+            /////////////////////////////////////
+            // The resulting CVS file will contain
+            var dataset = sds.DataSet.Open(NCfiles[0] + "?inferDims=true&appendMetadata=true");
+            float[, , , ,] DDD = dataset.GetData<float[, , , ,]>(dataset.Variables[0].Name);
+
+            int[] Dates = dataset.GetData<Int32[]>(dataset.Variables[6].Name);
+
+            int nbDays = DDD.GetLength(0);
+            int nbEns = DDD.GetLength(1);
+            int nbHours = DDD.GetLength(2);
+            int nbLat = DDD.GetLength(3);
+            int nbLon = DDD.GetLength(4);
+
+            float[,] XXX = new float[nbDays * NumberStations, nbHours * nbNCfiles + 1];
+
+            for (int station = 0; station < NumberStations; station++)
+                for (int day = 0; day < nbDays; day++)
+                    XXX[station * nbDays + day, 0] = Dates[day];
+
+            for (int var = 0; var < nbNCfiles; var++)
+            {
+                dataset = sds.DataSet.Open(NCfiles[var] + "?inferDims=true&appendMetadata=true");
+                DDD = dataset.GetData<float[, , , ,]>(dataset.Variables[0].Name);
+
+                for (int station = 0; station < NumberStations; station++)
+                {
+                    for (int day = 0; day < nbDays; day++)
+                    {
+                        for (int hour = 0; hour < nbHours; hour++)
+                        {
+                            vvv = new float[4];
+
+                            PPP = Weights[station];
+
+                            // Average of the 11 ensemble members
+                            for (int ens = 0; ens < nbEns; ens++)
+                            {
+                                vvv[0] += DDD[day, ens, hour, NearestGEFS[station][0, 0], NearestGEFS[station][0, 1]];
+                                vvv[1] += DDD[day, ens, hour, NearestGEFS[station][1, 0], NearestGEFS[station][1, 1]];
+                                vvv[2] += DDD[day, ens, hour, NearestGEFS[station][2, 0], NearestGEFS[station][2, 1]];
+                                vvv[3] += DDD[day, ens, hour, NearestGEFS[station][3, 0], NearestGEFS[station][3, 1]];
+                            }
+                            val = (PPP[0] * vvv[0] + PPP[1] * vvv[1] + PPP[2] * vvv[2] + PPP[3] * vvv[3]) / nbEns;
+
+                            XXX[station * nbDays + day, nbHours * var + hour + 1] = Convert.ToSingle(val);
+                        }
+                    }
+                }
+            }
+
+            /////////////////////////////////////
+            ///// Export data in a CSV file /////
+            /////////////////////////////////////
+            StreamWriter sw = new StreamWriter("DATA.csv");
+
+            // Header
+            sw.Write("Date,");
+            for (int var = 0; var < nbNCfiles; var++)
+                for (int hour = 0; hour < nbHours; hour++)
+                {
+                    sw.Write(NCfiles[var].Substring(0, NCfiles[var].IndexOf("_sfc")) + "_H" + hour.ToString());
+                    if (var != nbNCfiles - 1 || hour != nbHours) sw.Write(",");
+                }
+            sw.WriteLine();
+
+            // Data
+            for (int i = 0; i < XXX.GetLength(0); i++)
+            {
+                for (int j = 0; j < XXX.GetLength(1); j++)
+                {
+                    sw.Write(XXX[i, j]);
+                    if (j != XXX.GetLength(1) - 1) sw.Write(",");
+                }
+                sw.WriteLine();
+            }
+
+            sw.Close();
+
+        }
+    }
+}
+
